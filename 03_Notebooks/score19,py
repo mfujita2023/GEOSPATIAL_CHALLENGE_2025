@@ -1,0 +1,76 @@
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+from snowflake.snowpark.context import get_active_session
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import LabelEncoder
+
+session = get_active_session()
+df = session.table("GEO_CHALLENGE.DBT.FCT_ML_READY").to_pandas()
+df.columns = [c.upper() for c in df.columns]
+
+# --- 1. 最小限の補完 ---
+df['BUILDING_AGE'] = df['BUILDING_AGE'].fillna(df['BUILDING_AGE'].median())
+df['HOUSE_AREA'] = df['HOUSE_AREA'].fillna(df['HOUSE_AREA'].median())
+
+# --- 2. カテゴリID化 ---
+cat_cols = ['STATION_NAME', 'CITY_NAME', 'ADDR_GROUP']
+for col in cat_cols:
+    df[col+'_ID'] = LabelEncoder().fit_transform(df[col].astype(str))
+
+# --- 3. 軽量OOF Target Encoding (3-Fold) ---
+train_idx = df[df['DATA_TYPE'] == 'train'].index
+test_idx = df[df['DATA_TYPE'] == 'test'].index
+df.loc[train_idx, 'UP_TEMP'] = df.loc[train_idx, 'TARGET_PRICE'] / df.loc[train_idx, 'HOUSE_AREA']
+
+kf_te = KFold(n_splits=3, shuffle=True, random_state=42)
+df['BLDG_TE'] = np.nan
+df['ADDR_TE'] = np.nan
+
+for tr_f, val_f in kf_te.split(train_idx):
+    tmp_tr = df.iloc[train_idx[tr_f]]
+    # meanの方が計算が速い
+    b_map = tmp_tr.groupby('BUILDING_ID')['TARGET_PRICE'].mean()
+    a_map = tmp_tr.groupby('ADDR_GROUP')['UP_TEMP'].mean()
+    df.loc[train_idx[val_f], 'BLDG_TE'] = df.loc[train_idx[val_f], 'BUILDING_ID'].map(b_map)
+    df.loc[train_idx[val_f], 'ADDR_TE'] = df.loc[train_idx[val_f], 'ADDR_GROUP'].map(a_map)
+
+# テスト用
+full_tr = df.loc[train_idx]
+df.loc[test_idx, 'BLDG_TE'] = df.loc[test_idx, 'BUILDING_ID'].map(full_tr.groupby('BUILDING_ID')['TARGET_PRICE'].mean())
+df.loc[test_idx, 'ADDR_TE'] = df.loc[test_idx, 'ADDR_GROUP'].map(full_tr.groupby('ADDR_GROUP')['UP_TEMP'].mean())
+
+# 欠損埋め
+df['BLDG_TE'] = df['BLDG_TE'].fillna(full_tr['TARGET_PRICE'].mean())
+df['ADDR_TE'] = df['ADDR_TE'].fillna(full_tr['UP_TEMP'].mean())
+
+# --- 4. 学習 (3-Fold) ---
+features = [
+    'HOUSE_AREA', 'FLOOR_COUNT', 'BUILDING_AGE', 'LAT', 'LON', 
+    'FINAL_WALK_DIST', 'NEAREST_LAND_PRICE', 'LAND_GROWTH_RATE',
+    'BLDG_TE', 'ADDR_TE', 'STATION_NAME_ID', 'CITY_NAME_ID', 'ADDR_GROUP_ID'
+]
+X = df.loc[train_idx, features]
+y_log = np.log1p(df.loc[train_idx, 'TARGET_PRICE'])
+X_test = df.loc[test_idx, features]
+
+test_preds = np.zeros(len(X_test))
+lgb_params = {
+    'objective': 'regression', 'metric': 'mae', 'learning_rate': 0.05, # rateを上げて速く収束させる
+    'num_leaves': 63, 'random_state': 42, 'verbosity': -1
+}
+
+kf_train = KFold(n_splits=3, shuffle=True, random_state=42)
+for tr, val in kf_train.split(X, y_log):
+    t_set = lgb.Dataset(X.iloc[tr], label=y_log.iloc[tr])
+    v_set = lgb.Dataset(X.iloc[val], label=y_log.iloc[val], reference=t_set)
+    model = lgb.train(lgb_params, t_set, valid_sets=[v_set], 
+                      num_boost_round=1000, callbacks=[lgb.early_stopping(50)])
+    test_preds += np.expm1(model.predict(X_test)) / 3
+
+# --- 5. 提出 ---
+test_df = df.loc[test_idx].copy()
+test_df['PRICE'] = np.round(test_preds).astype(int)
+test_df[['ID', 'PRICE']].to_csv("submission.csv", header=False, index=False)
+session.file.put("submission.csv", "@SUBMIT_STAGE", overwrite=True, auto_compress=False)
+print("軽量版ミッション完了！")

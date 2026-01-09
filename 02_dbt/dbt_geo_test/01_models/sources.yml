@@ -1,0 +1,21 @@
+version: 2
+sources:
+  - name: raw_data
+    database: GEO_CHALLENGE
+    schema: INPUT
+    tables:
+      - name: train
+      - name: test
+  - name: marketplace_data      # Marketplaceから入れた駅データ
+    database: PREPPER_OPEN_DATA_BANK__JAPANESE_STATION_AND_RAILWAY_DATA        # マウントしたDB名に合わせてください
+    schema: E_PODB              # スキーマ名に合わせてください
+    tables:
+      - name: E_SR_PS_2    # 実際のテーブル名に合わせてください
+  - name: marketplace_land_price
+    database: PREPPER_OPEN_DATA_BANK__JAPANESE_LAND_PRICE_DATA # Marketplaceのデータベース名
+    schema: E_PODB
+    tables:
+      - name: E_LP_PP  # 地点情報テーブル
+        description: "地価公示の地点定義データ（都道府県、市区町村、住所、座標など）"
+      - name: E_LP_TS  # 時系列価格テーブル
+        description: "地価公示の年度別価格データ"

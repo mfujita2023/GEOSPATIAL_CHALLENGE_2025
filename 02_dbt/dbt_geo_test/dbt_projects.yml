@@ -1,0 +1,23 @@
+name: dbt_geo_test
+version: 1.0.0
+config-version: 2
+profile: dbt_geo_test
+model-paths:
+  - models
+analysis-paths:
+  - analyses
+test-paths:
+  - tests
+seed-paths:
+  - seeds
+macro-paths:
+  - macros
+snapshot-paths:
+  - snapshots
+models:
+  dbt_geo_test:
+    01_staging:
+      +schema: staging  # ここで指定した名前が後ろにくっついて「DBT_STAGING」のようになる
+    02_intermediate:
+      +schema: intermediate
+    +materialized: view

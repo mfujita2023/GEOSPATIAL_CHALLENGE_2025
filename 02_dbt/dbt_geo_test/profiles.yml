@@ -1,0 +1,10 @@
+dbt_geo_test:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      user: MFUJITA0107GEO
+      role: ACCOUNTADMIN
+      warehouse: COMPUTE_WH
+      database: GEO_CHALLENGE
+      schema: DBT
